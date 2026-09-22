@@ -1,0 +1,47 @@
+{
+	// download.ephix.net — gated search bar in front of Sonarr/Radarr at home.
+	// Sonarr/Radarr are reached through a Cloudflare Tunnel on the hostnames below,
+	// which sit in the same Access application as this Worker, so the visitor's
+	// Access login is forwarded and nothing is reachable anonymously.
+	"name": "download-ephix",
+	"main": "src/index.js",
+	"compatibility_date": "2026-09-01",
+	// Requests made while the laptop/tunnel is offline wait here; the cron retries them.
+	"kv_namespaces": [
+		{
+			"binding": "QUEUE",
+			"id": "96ce98ee8c2349bca5fdcfb24a2ec0fd"
+		}
+	],
+	"triggers": {
+		"crons": ["*/5 * * * *"]
+	},
+	"routes": [
+		{
+			"pattern": "download.ephix.net",
+			"custom_domain": true
+		}
+	],
+	"vars": {
+		"SONARR_URL": "https://sonarr-api.ephix.net",
+		"RADARR_URL": "https://radarr-api.ephix.net",
+		"PROWLARR_URL": "https://prowlarr-api.ephix.net",
+		"QBIT_URL": "https://qbit-api.ephix.net",
+		// Zero Trust team domain and the Access application's AUD tag. Until both are
+		// set (wrangler.jsonc or dashboard vars) the Worker refuses every request.
+		"ACCESS_TEAM_DOMAIN": "me-2a4.cloudflareaccess.com",
+		"ACCESS_AUD": "7283b2824bcefa9670c262c404bd6b1764a8daf7892fb2125c69d440807971ba",
+		// Who the Worker will actually serve, comma separated, matched case-insensitively
+		// against the email in the Access JWT. Passing Access is not enough on its own.
+		// This must be the address you sign in to Zero Trust with; check /api/me if unsure.
+		"ALLOWED_EMAILS": "lewi.hirvela@gmail.com"
+	},
+	// Secrets (wrangler secret put): SONARR_API_KEY, RADARR_API_KEY, PROWLARR_API_KEY.
+	// Required, not optional: ACCESS_CLIENT_ID, ACCESS_CLIENT_SECRET. Access will not
+	// authenticate the Worker on the visitor's forwarded JWT, only on a service token,
+	// so without these every origin call is 302'd to the login page and the site reports
+	// "home is offline" while home is fine. See README step 4.
+	"observability": {
+		"enabled": true
+	}
+}
