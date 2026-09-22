@@ -21,6 +21,23 @@ Two independent gates. A visitor has to pass Access to reach the Worker at all, 
 Worker verifies the Access JWT itself rather than trusting that Access is in front of it.
 If someone ever removes the Access application, the Worker still refuses everything.
 
+## Platform
+
+**This was written and tested on Windows**, and the home side assumes it: the helper
+scripts in `home/` are PowerShell, and one of the gotchas below is about Windows service
+accounts.
+
+The Cloudflare half is not Windows-specific in any way. Parts 2 to 6, so the tunnel, the
+Access application, the service token and the verification, are dashboard work plus
+`wrangler`, and behave identically on Linux and macOS. That is also the part that takes the
+longest to get right, so most of this guide applies to you whatever you are running.
+
+To port it properly you would need to rewrite `home/*.ps1`, use your platform's cloudflared
+install and service manager (systemd or launchd rather than a Windows service), and find
+Sonarr's and Radarr's config in `/var/lib/` or `~/.config/` instead of `C:\ProgramData\`.
+`mkvpropedit` is cross-platform, so that script is a wrapper rewrite rather than a logic
+one. A Linux or macOS fork would be a genuinely useful thing to exist.
+
 ## Before you start
 
 - A domain on Cloudflare, on any plan including the free one
@@ -46,9 +63,9 @@ removes the need for an open port.
 
 1. Zero Trust dashboard, Networks, Tunnels, **Create a tunnel**, type Cloudflared, give it
    a name.
-2. On the install step, pick your platform and copy the install command it gives you. On
-   Windows run it in PowerShell **as Administrator**. It registers a service that starts
-   with the machine.
+2. On the install step, pick your platform and copy the install command it gives you. Run
+   it with the privileges installing a service needs: an **Administrator** PowerShell on
+   Windows, `sudo` on Linux or macOS. It registers a service that starts with the machine.
 3. On the **Public Hostname** tab, add one entry per service:
    - `api` . `example.com` -> Service `HTTP` -> `localhost:8989`
 
@@ -142,7 +159,7 @@ widened later. It costs nothing to check.
 
 Then the secrets, which never go in a file:
 
-```powershell
+```sh
 wrangler secret put ACCESS_CLIENT_ID
 wrangler secret put ACCESS_CLIENT_SECRET
 wrangler secret put SERVICE_API_KEY
