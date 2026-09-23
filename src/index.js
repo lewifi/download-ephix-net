@@ -55,6 +55,7 @@ export default {
       if (url.pathname === '/api/raw') return json(await rawSearch(url.searchParams.get('q') || '', env, jwt), 200, cors);
       if (url.pathname === '/api/grab' && request.method === 'POST') return json(await addOrQueue({ type: 'raw', ...(await request.json()) }, env, jwt), 200, cors);
       if (url.pathname === '/api/queue') return json(await queueOrOffline(env, jwt), 200, cors);
+      if (url.pathname === '/api/history') return json(await historyOrOffline(env, jwt), 200, cors);
       if (url.pathname === '/api/pending') return json({ pending: await listPending(env) }, 200, cors);
       if (url.pathname === '/shows') return html(SUBS_PAGE(who.email));
       if (url.pathname === '/api/subs') return json(await subs(env, jwt), 200, cors);
@@ -540,6 +541,45 @@ async function qbit(path, env, jwt) {
   return r.json();
 }
 
+// ---------- recently downloaded ----------
+//
+// What has actually landed, as opposed to what is still coming. Both apps record an
+// import event; merged and sorted by time they answer "did that thing arrive?", which is
+// the question a push notification prompts and nothing else on the site could answer.
+
+async function history(env, jwt) {
+  const [tv, film] = await Promise.all([
+    arr('sonarr', '/history?pageSize=30&sortKey=date&sortDirection=descending&eventType=3&includeEpisode=true&includeSeries=true', env, jwt),
+    arr('radarr', '/history?pageSize=30&sortKey=date&sortDirection=descending&eventType=3&includeMovie=true', env, jwt),
+  ]);
+  const pad = (n) => String(n ?? 0).padStart(2, '0');
+  const gb = (n) => (Number(n || 0) / 2 ** 30).toFixed(2);
+  const items = [
+    ...(tv.records || []).map((r) => ({
+      via: 'TV', at: r.date,
+      title: r.series?.title || r.sourceTitle,
+      sub: r.episode ? `S${pad(r.episode.seasonNumber)}E${pad(r.episode.episodeNumber)}${r.episode.title ? ' · ' + r.episode.title : ''}` : '',
+      quality: r.quality?.quality?.name || '', gb: gb(r.data?.size),
+    })),
+    ...(film.records || []).map((r) => ({
+      via: 'Film', at: r.date,
+      title: r.movie ? `${r.movie.title}${r.movie.year ? ` (${r.movie.year})` : ''}` : r.sourceTitle,
+      sub: '', quality: r.quality?.quality?.name || '', gb: gb(r.data?.size),
+    })),
+  ].sort((a, b) => String(b.at).localeCompare(String(a.at))).slice(0, 25);
+  return { items };
+}
+
+// Same treatment as the queue: home being down is a normal state here, not an error.
+async function historyOrOffline(env, jwt) {
+  try {
+    return await history(env, jwt);
+  } catch (e) {
+    if (isOffline(e)) return { items: [], offline: true };
+    throw e;
+  }
+}
+
 // ---------- subscriptions (/shows) ----------
 //
 // What the library is committed to, as opposed to what it already has: every series
@@ -728,6 +768,8 @@ ${STYLES}
   <div id="pendwrap" hidden><h2>Waiting for home to come online</h2><div id="pending"></div></div>
   <h2>Downloading now</h2>
   <div id="queue" class="msg">Nothing in the queue.</div>
+  <h2>Recently downloaded</h2>
+  <div id="history" class="msg">Loading&hellip;</div>
 </div>
 <footer class="foot"><a href="/shows" style="color:var(--accent);text-decoration:none">Subscriptions &amp; cancelling &rarr;</a><br>Signed in as ${escapeHtml(email)} · Sonarr &amp; Radarr at home</footer>
 <script>
@@ -863,6 +905,35 @@ async function loadQueue() {
   } catch (err) { $('#queue').innerHTML = '<span class="err">' + esc(err.message) + '</span>'; }
 }
 loadQueue(); setInterval(loadQueue, 10000);
+
+// How long ago, in the fewest characters that still mean something.
+function ago(iso) {
+  const t = new Date(iso); if (isNaN(t)) return '';
+  const mins = Math.round((Date.now() - t.getTime()) / 60000);
+  if (mins < 1) return 'just now';
+  if (mins < 60) return mins + 'm ago';
+  if (mins < 1440) return Math.round(mins / 60) + 'h ago';
+  if (mins < 2880) return 'yesterday';
+  if (mins < 10080) return Math.round(mins / 1440) + 'd ago';
+  return t.toLocaleDateString(undefined, { day: 'numeric', month: 'short' });
+}
+
+// Polled far more slowly than the queue: imports are minutes apart at best, and this
+// costs two calls to home each time.
+async function loadHistory() {
+  try {
+    const r = await fetch('/api/history').then((r) => r.json());
+    if (r.error) throw new Error(r.error);
+    if (r.offline) { $('#history').className = 'msg'; $('#history').textContent = 'Home is offline, so there is no history to show.'; return; }
+    $('#history').className = r.items.length ? '' : 'msg';
+    $('#history').innerHTML = r.items.length ? r.items.map((i) =>
+      '<div class="q"><div class="t"><span class="tag">' + esc(i.via) + '</span>' + esc(i.title)
+      + ' <span class="m">' + esc(ago(i.at)) + (i.gb > 0 ? ' · ' + i.gb + ' GB' : '') + (i.quality ? ' · ' + esc(i.quality) : '') + '</span></div>'
+      + (i.sub ? '<div class="m">' + esc(i.sub) + '</div>' : '') + '</div>').join('')
+      : 'Nothing downloaded yet.';
+  } catch (err) { $('#history').innerHTML = '<span class="err">' + esc(err.message) + '</span>'; }
+}
+loadHistory(); setInterval(loadHistory, 60000);
 
 // Opened as download.ephix.net/?add=tv:<tmdb>|movie:<tmdb> (fallback path from an Ephix Pulse card)
 const autoAdd = ${JSON.stringify(autoAdd || '')};
