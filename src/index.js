@@ -685,6 +685,9 @@ const STYLES = `
   button:disabled { opacity: .5; cursor: default; }
   button.ghost { background: transparent; color: var(--ink); border-color: var(--hair); }
   h2 { font-size: 13px; font-weight: 600; letter-spacing: .02em; text-transform: uppercase; color: var(--muted); margin: 36px 0 12px; }
+  /* A section heading that is also the way to the other page, rather than a footer link. */
+  h2 a { color: var(--accent); text-decoration: none; }
+  h2 a:hover { text-decoration: underline; }
   .card { display: grid; grid-template-columns: 64px 1fr auto; gap: 14px; align-items: start; padding: 12px; margin-bottom: 10px;
     background: var(--panel); border: 1px solid var(--hair); border-radius: var(--radius); }
   .card img, .card .noimg { width: 64px; height: 96px; object-fit: cover; border-radius: 8px; background: var(--chip); }
@@ -770,8 +773,9 @@ ${STYLES}
   <div id="queue" class="msg">Nothing in the queue.</div>
   <h2>Recently downloaded</h2>
   <div id="history" class="msg">Loading&hellip;</div>
+  <h2><a href="/shows">Subscriptions &amp; cancelling &rarr;</a></h2>
 </div>
-<footer class="foot"><a href="/shows" style="color:var(--accent);text-decoration:none">Subscriptions &amp; cancelling &rarr;</a><br>Signed in as ${escapeHtml(email)} · Sonarr &amp; Radarr at home</footer>
+<footer class="foot">Signed in as ${escapeHtml(email)} · Sonarr &amp; Radarr at home</footer>
 <script>
 const $ = (s) => document.querySelector(s);
 const esc = (s) => String(s ?? '').replace(/[&<>"']/g, (c) => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
