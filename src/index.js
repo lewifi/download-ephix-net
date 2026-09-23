@@ -1,4 +1,4 @@
-// download.ephix.net — a gated search bar in front of Sonarr and Radarr.
+// download.ephix.net: a gated search bar in front of Sonarr and Radarr.
 //
 // Request flow
 //   browser -> Cloudflare Access (one-time PIN) -> this Worker
@@ -212,7 +212,7 @@ function originHeaders(env, jwt, apiKey, extra = {}) {
 // "Home is offline" is decided by how the call to the tunnel fails, not by matching
 // error text: the fetch itself throwing (no route), any 5xx (Cloudflare's 5xx/52x/530
 // when the tunnel has no connector, or Sonarr/Radarr mid-restart), or Access bouncing us
-// to its login page (the forwarded JWT was refused — nothing behind it can be reached).
+// to its login page (the forwarded JWT was refused, so nothing behind it can be reached).
 class OfflineError extends Error { constructor(m) { super(m); this.offline = true; } }
 const isOffline = (e) => !!e?.offline;
 
@@ -385,12 +385,46 @@ async function seasons(q, env, jwt) {
 // `tmdbId` is accepted for either type (what Ephix Pulse cards have).
 // TV `mode`: 'all' | 'future' | 'latest' | 'seasons' (with `seasons: [n, …]`).
 // Every mode keeps future episodes monitored, so a show keeps coming after the pick.
+// Adding something Sonarr already has used to return "already there" and stop, which is
+// how a back catalogue can sit missing while the button keeps reporting success. Make
+// the requested seasons monitored first, because searching an unmonitored season finds
+// releases and then refuses to grab them, which looks identical to finding nothing.
+async function searchExisting(s, { mode, picked }, env, jwt) {
+  const full = await arr('sonarr', `/series/${s.id}`, env, jwt);
+  const nums = (full.seasons || []).map((x) => x.seasonNumber).filter((n) => n > 0);
+  let want = null;
+  if (mode === 'latest') want = new Set([Math.max(...nums)]);
+  if (mode === 'seasons') {
+    want = new Set((picked || []).map(Number));
+    if (!want.size) throw new Error('No seasons chosen');
+  }
+
+  if (want) {
+    const missing = [...want].filter((n) => !nums.includes(n));
+    if (missing.length) throw new Error(`No season ${missing.join(', ')} on this show`);
+    const changed = (full.seasons || []).filter((x) => want.has(x.seasonNumber) && !x.monitored);
+    if (changed.length) {
+      full.seasons = full.seasons.map((x) => (want.has(x.seasonNumber) ? { ...x, monitored: true } : x));
+      await arr('sonarr', `/series/${s.id}`, env, jwt, { method: 'PUT', body: JSON.stringify(full) });
+    }
+    for (const n of want) {
+      await arr('sonarr', '/command', env, jwt, { method: 'POST', body: JSON.stringify({ name: 'SeasonSearch', seriesId: s.id, seasonNumber: n }) });
+    }
+    return { ok: true, already: true, title: s.title, searched: 'S' + [...want].sort((a, b) => a - b).join(', S') };
+  }
+
+  // 'all' and 'future' both mean "the whole show" here: SeriesSearch only chases what is
+  // monitored and missing, so it is the right blunt instrument either way.
+  await arr('sonarr', '/command', env, jwt, { method: 'POST', body: JSON.stringify({ name: 'SeriesSearch', seriesId: s.id }) });
+  return { ok: true, already: true, title: s.title, searched: 'every missing episode' };
+}
+
 async function add({ type, id, mode, tmdbId, seasons: picked, guid, indexerId, title, q }, env, jwt) {
   if (type === 'raw') return grab({ guid, indexerId, title, q }, env, jwt);
   if (type === 'tv') {
     const [s] = await arr('sonarr', `/series/lookup?term=${tvTerm({ id, tmdbId })}`, env, jwt);
     if (!s) throw new Error('Not found on TVDB');
-    if (s.id) return { ok: true, already: true, title: s.title };
+    if (s.id) return searchExisting(s, { mode, picked }, env, jwt);
     const folder = safeFolder(s.title.replace(/\s*\(\d{4}\)$/, ''), `Series ${s.tvdbId}`);
     let monitor = 'all';
     let seasonList = s.seasons;
@@ -417,7 +451,10 @@ async function add({ type, id, mode, tmdbId, seasons: picked, guid, indexerId, t
   if (type === 'movie') {
     const [m] = await arr('radarr', `/movie/lookup?term=tmdb:${tmdbId || id}`, env, jwt);
     if (!m) throw new Error('Not found on TMDB');
-    if (m.id) return { ok: true, already: true, title: m.title };
+    if (m.id) {
+      await arr('radarr', '/command', env, jwt, { method: 'POST', body: JSON.stringify({ name: 'MoviesSearch', movieIds: [m.id] }) });
+      return { ok: true, already: true, searched: 'the film', title: m.title };
+    }
     const folder = safeFolder(`${m.title} (${m.year})`, `Movie ${m.tmdbId}`);
     const r = await arr('radarr', '/movie', env, jwt, {
       method: 'POST',
@@ -489,7 +526,7 @@ async function grab({ guid, indexerId, q, title }, env, jwt) {
 }
 
 // "Downloading now" comes straight from qBittorrent (everything it's working on, whoever
-// added it — Sonarr, Radarr, a raw grab), with Sonarr/Radarr consulted only to put a proper
+// added it: Sonarr, Radarr, a raw grab), with Sonarr/Radarr consulted only to put a proper
 // episode/film name on each torrent. Falls back to the two arr queues if qBittorrent isn't
 // published through the tunnel yet.
 async function queue(env, jwt) {
@@ -505,7 +542,7 @@ async function queue(env, jwt) {
 
   if (qb) {
     const fmtEta = (s) => (s >= 8640000 || s <= 0) ? '' : s >= 3600 ? `${Math.floor(s / 3600)}h ${Math.floor((s % 3600) / 60)}m` : `${Math.max(1, Math.round(s / 60))}m`;
-    const state = (t) => ({ downloading: 'downloading', metaDL: 'fetching metadata', stalledDL: 'stalled — no peers', queuedDL: 'queued', pausedDL: 'paused', stoppedDL: 'stopped', checkingDL: 'checking', forcedDL: 'downloading', uploading: 'done', stalledUP: 'done', queuedUP: 'done', pausedUP: 'done', stoppedUP: 'done', forcedUP: 'done', error: 'error', missingFiles: 'missing files' })[t.state] || t.state;
+    const state = (t) => ({ downloading: 'downloading', metaDL: 'fetching metadata', stalledDL: 'stalled, no peers', queuedDL: 'queued', pausedDL: 'paused', stoppedDL: 'stopped', checkingDL: 'checking', forcedDL: 'downloading', uploading: 'done', stalledUP: 'done', queuedUP: 'done', pausedUP: 'done', stoppedUP: 'done', forcedUP: 'done', error: 'error', missingFiles: 'missing files' })[t.state] || t.state;
     const items = qb
       .filter((t) => t.progress < 1 || Date.now() / 1000 - t.completion_on < 600) // hide long-finished ones
       .sort((a, b) => a.added_on - b.added_on)
@@ -527,7 +564,7 @@ async function queue(env, jwt) {
 }
 
 // qBittorrent Web API through the tunnel. It trusts localhost (which is what the tunnel
-// looks like to it), so Access is the only gate — same as the arr apps.
+// looks like to it), so Access is the only gate, same as the arr apps.
 async function qbit(path, env, jwt) {
   let r;
   try {
@@ -842,14 +879,14 @@ $('#f').addEventListener('submit', async (e) => {
   try {
     if (mode() === 'raw') {
       const r = await fetch('/api/raw?q=' + encodeURIComponent(q)).then((r) => r.json());
-      if (r.error) throw new Error(/unreachable|5\\d\\d|redirected/.test(r.error) ? 'Raw search needs home online — it asks the indexers through the laptop.' : r.error);
+      if (r.error) throw new Error(/unreachable|5\\d\\d|redirected/.test(r.error) ? 'Raw search needs home online, it asks the indexers through the laptop.' : r.error);
       $('#msg').textContent = r.results.length ? (r.hidden ? 'Hid ' + r.hidden + ' executable-named fake(s).' : '') : 'Nothing found.';
       $('#results').innerHTML = r.results.map((x) => rawRow(x, q)).join('');
     } else {
       const r = await fetch('/api/search?q=' + encodeURIComponent(q)).then((r) => r.json());
       if (r.error) throw new Error(r.error);
       $('#msg').innerHTML = r.offline
-        ? '<span class="warn">Home is offline — showing TMDB results. Anything you add is queued and picked up when the laptop is back.</span>'
+        ? '<span class="warn">Home is offline, showing TMDB results. Anything you add is queued and picked up when the laptop is back.</span>'
         : (r.results.length ? '' : 'Nothing matched on TVDB or TMDB.');
       $('#results').innerHTML = r.results.map(card).join('');
     }
@@ -874,7 +911,7 @@ async function grabRaw(btn) {
   try {
     const r = await fetch('/api/grab', { method: 'POST', headers: { 'content-type': 'application/json' }, body: btn.dataset.grab }).then((r) => r.json());
     if (r.error) throw new Error(r.error);
-    box.innerHTML = '<span class="ok">' + (r.queued ? 'Queued — home is offline' : 'Sent to qBittorrent → Media\\\\Other') + '</span>';
+    box.innerHTML = '<span class="ok">' + (r.queued ? 'Queued, home is offline' : 'Sent to qBittorrent → Media\\\\Other') + '</span>';
   } catch (err) { box.innerHTML = '<span class="err">' + esc(err.message) + '</span>'; }
 }
 
@@ -930,7 +967,10 @@ async function add(btn, type, id, mode, seasons, tmdbId) {
     if (r.error) throw new Error(r.error);
     const what = mode === 'seasons' ? ' (S' + seasons.join(', S') + ' + new)' : mode === 'future' ? ' (new episodes only)' : mode === 'all' ? ' (all seasons)' : '';
     box.className = 'act';
-    box.innerHTML = '<span class="ok">' + (r.queued ? 'Queued — home is offline, will add automatically' : r.already ? 'Already added' : 'Added — searching' + what) + '</span>';
+    const msg = r.queued ? 'Queued. Home is offline, it will add automatically'
+      : r.already ? 'Already in the library. Searching ' + esc(r.searched || 'for what is missing')
+      : 'Added, searching' + what;
+    box.innerHTML = '<span class="ok">' + msg + '</span>';
     setTimeout(loadQueue, 4000); setTimeout(loadQueue, 15000);
   } catch (err) { box.className = 'act'; box.innerHTML = '<span class="err">' + esc(err.message) + '</span>'; }
 }
@@ -947,7 +987,7 @@ async function loadQueue() {
       + (i.lastError ? '<div class="m">' + esc(i.lastError) + '</div>' : '') + '</div>').join('');
     if (r.offline) {
       $('#queue').className = 'msg';
-      $('#queue').textContent = 'Home is offline — the laptop or its internet is down. Requests are queued and retried every 5 minutes.';
+      $('#queue').textContent = 'Home is offline: the laptop or its internet is down. Requests are queued and retried every 5 minutes.';
       return;
     }
     $('#queue').className = r.items.length ? '' : 'msg';
@@ -997,7 +1037,7 @@ if (/^(tv|movie):\\d+$/.test(autoAdd)) {
   fetch('/api/add', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ type, tmdbId: Number(tmdbId), mode: type === 'tv' ? 'latest' : 'all' }) })
     .then((r) => r.json())
     .then((r) => { if (r.error) throw new Error(r.error);
-      $('#msg').innerHTML = '<span class="ok">' + esc(r.title || '') + ': ' + (r.queued ? 'queued — home is offline, will add automatically' : r.already ? 'already in the library' : 'added — searching now') + '</span>';
+      $('#msg').innerHTML = '<span class="ok">' + esc(r.title || '') + ': ' + (r.queued ? 'queued, home is offline, will add automatically' : r.already ? 'already in the library' : 'added, searching now') + '</span>';
       setTimeout(loadQueue, 4000); setTimeout(loadQueue, 15000); })
     .catch((err) => { $('#msg').innerHTML = '<span class="err">' + esc(err.message) + '</span>'; });
   history.replaceState(null, '', '/');

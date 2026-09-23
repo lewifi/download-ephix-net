@@ -26,14 +26,14 @@ tunnel hostnames, which are in the same Access application.
    - `radarr-api` . `ephix.net` → Service `HTTP` `localhost:7878`
 
 ### 2. Access application (Zero Trust → Access → Applications → Add → Self-hosted)
-- Name `media`. Application domains — add all three:
+- Name `media`. Application domains, add all three:
   `download.ephix.net`, `sonarr-api.ephix.net`, `radarr-api.ephix.net`
 - Identity: **One-time PIN** is enough (Zero Trust → Settings → Authentication if it
   isn't enabled yet).
 - Policy: name `me`, action **Allow**, include **Emails** → your address(es).
 - Save. Open the application again and copy:
   - **Application Audience (AUD) Tag** (long hex string, under Overview / Basic information)
-  - your **team domain** — `<team>.cloudflareaccess.com` (Zero Trust → Settings → Custom Pages)
+  - your **team domain**, `<team>.cloudflareaccess.com` (Zero Trust → Settings → Custom Pages)
 
 ### 3. Deploy the Worker
 Put the two values into `wrangler.jsonc` → `vars` (`ACCESS_TEAM_DOMAIN`, `ACCESS_AUD`), then:
@@ -109,10 +109,10 @@ login page. Check in this order, it goes from most to least conclusive:
 If the laptop or its internet is down the tunnel is dead. The site keeps working anyway:
 search and the season picker fall back to TMDB (via `ephix.net/api/tmdb`, no key needed),
 and an Add is stored in KV (`QUEUE`, 7-day TTL) and retried by a cron (`*/5 * * * *`) until
-Sonarr/Radarr accept it. The page shows a "Home is offline — showing TMDB results" note,
-"Queued — home is offline" on the button, and a "Waiting for home to come online" list.
+Sonarr/Radarr accept it. The page shows a "Home is offline, showing TMDB results" note,
+"Queued, home is offline" on the button, and a "Waiting for home to come online" list.
 "Offline" is decided by how the origin call fails (network error, any 5xx, or an Access
-redirect) — not by matching error text. Retries reuse your Access token from request time
+redirect), not by matching error text. Retries reuse your Access token from request time
 (valid 24 h); for longer outages set the service-token secrets and retries never expire.
 
 ## Host filtering in Sonarr/Radarr
@@ -125,26 +125,26 @@ gained this on its 6.4 update; watch for it after future updates.
 ## Notifications
 Sonarr and Radarr post to **ntfy** topic `ephix-media-8ecb18e7fa66` on `ntfy.sh` when an
 import finishes (Settings → Connect → "ntfy → phone"). Subscribe to that topic in the ntfy
-app on the phone. The topic name is the only secret — don't publish it.
+app on the phone. The topic name is the only secret, so don't publish it.
 
 ## Cards on ephix.net
 `Dev\ephixpulse-web\index.html` adds a ⬇ button to every card, only when
-`download.ephix.net/api/me` answers — i.e. the browser holds the Access session. Public
+`download.ephix.net/api/me` answers, i.e. the browser holds the Access session. Public
 visitors never see it. Films add in one tap; TV opens a season picker. Works offline too
 (the picker reads TMDB and the add is queued).
 
 ## Raw torrent search (toggle on the page)
 "Raw torrents → Other" searches Prowlarr directly (all indexers) for anything TVDB/TMDB
-doesn't know — sport, one-off documentaries, obscure stuff. Results are filtered the same
+doesn't know: sport, one-off documentaries, obscure stuff. Results are filtered the same
 way as `Get-Torrent.ps1` (no executable-named releases, nothing under 50 MB, results with
-no download link dropped — TorrentsCSV only returns bare magnets) and sorted by seeders.
+no download link dropped, TorrentsCSV only returns bare magnets) and sorted by seeders.
 **Grab** asks Prowlarr to send the release to qBittorrent under category `other`, which
 saves to `C:\Users\lewih\Downloads\Media\Other` with the release name as-is. Sonarr/Radarr
 never touch that folder; point a Plex "Other videos" library at it if wanted.
 Needs home online for the search; a grab made while offline is queued like an add.
 Pieces: tunnel route `prowlarr-api.ephix.net → localhost:9696` (in the `media` Access app),
 Worker secret `PROWLARR_API_KEY`, Prowlarr → Settings → Download Clients → "qBittorrent (raw
-to Other)". Prowlarr's grab reply always says `protocol: unknown` — that's cosmetic.
+to Other)". Prowlarr's grab reply always says `protocol: unknown`, and that's cosmetic.
 
 ## What the page does
 - Search → `/api/search` → Sonarr `series/lookup` + Radarr `movie/lookup` (TVDB/TMDB),
@@ -155,7 +155,7 @@ to Other)". Prowlarr's grab reply always says `protocol: unknown` — that's cos
 - "Downloading now" → `/api/queue` every 10 s. Reads qBittorrent directly through
   `qbit-api.ephix.net` (everything active, incl. raw grabs; speed + ETA; TV/Film/Other tag,
   Sonarr/Radarr consulted for friendly names). Falls back to the two arr queues if the qBit
-  route is down. qBittorrent's Web UI "server domains" must be `localhost;qbit-api.ephix.net`
-  — **semicolon**-separated; a comma makes one bogus domain and locks *everyone* out
+  route is down. qBittorrent's Web UI "server domains" must be `localhost;qbit-api.ephix.net`,
+  **semicolon**-separated. A comma makes one bogus domain and locks *everyone* out
   (Sonarr/Radarr included) until qBittorrent is restarted with the ini fixed.
 - Phone layout: stacked search, thumb-sized buttons, season chips wrap; tested at 390 px.
