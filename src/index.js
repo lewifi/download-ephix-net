@@ -384,8 +384,8 @@ async function seasons(q, env, jwt) {
 // `tmdbId` is accepted for either type (what Ephix Pulse cards have).
 // TV `mode`: 'all' | 'future' | 'latest' | 'seasons' (with `seasons: [n, …]`).
 // Every mode keeps future episodes monitored, so a show keeps coming after the pick.
-async function add({ type, id, mode, tmdbId, seasons: picked, guid, indexerId, title }, env, jwt) {
-  if (type === 'raw') return grab({ guid, indexerId, title }, env, jwt);
+async function add({ type, id, mode, tmdbId, seasons: picked, guid, indexerId, title, q }, env, jwt) {
+  if (type === 'raw') return grab({ guid, indexerId, title, q }, env, jwt);
   if (type === 'tv') {
     const [s] = await arr('sonarr', `/series/lookup?term=${tvTerm({ id, tmdbId })}`, env, jwt);
     if (!s) throw new Error('Not found on TVDB');
@@ -472,10 +472,14 @@ async function rawSearch(q, env, jwt) {
 // guid, so don't take the client's word for what it picked. Re-run the same query on this
 // side, find that guid among the results, and test the indexer's own title against the
 // filter. `q` is what makes that possible, so it is required.
-async function grab({ guid, indexerId, q }, env, jwt) {
+async function grab({ guid, indexerId, q, title }, env, jwt) {
   if (!guid || !indexerId) throw new Error('guid and indexerId required');
-  if (!String(q ?? '').trim()) throw new Error('q (the search this result came from) is required');
-  const rows = await prowlarrSearch(String(q).trim(), env, jwt);
+  // Newer pages send the search that produced this pick. Older cached pages send only the
+  // release title, so fall back to searching for that. Either way the guid is confirmed
+  // against what the indexer returns just now, so the client's claim is never trusted.
+  const query = String(q ?? title ?? '').trim();
+  if (!query) throw new Error('Nothing to verify this pick against. Reload the page and search again.');
+  const rows = await prowlarrSearch(query, env, jwt);
   const match = rows.find((r) => r.guid === guid && Number(r.indexerId) === Number(indexerId));
   if (!match) throw new Error('That result has dropped out of the search. Search again and re-grab.');
   if (!grabbable(match)) throw new Error(`Refused "${match.title}": executable-style name, or under ${MIN_BYTES / 2 ** 20} MB.`);
