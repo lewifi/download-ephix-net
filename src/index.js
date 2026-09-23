@@ -547,27 +547,64 @@ async function qbit(path, env, jwt) {
 // import event; merged and sorted by time they answer "did that thing arrive?", which is
 // the question a push notification prompts and nothing else on the site could answer.
 
+// How far back "recently" reaches, and the most rows worth showing at a glance.
+const HISTORY_DAYS = 7;
+const HISTORY_ROWS = 12;
+
+// A season number Sonarr did not give us is still a real import, so say the honest thing
+// rather than printing "Season 00".
+const seasonLabel = (n) => (n == null ? 'Season unknown' : `Season ${String(n).padStart(2, '0')}`);
+
 async function history(env, jwt) {
+  // Ask for more than is shown, because the date cut-off throws records away and grouping
+  // then collapses many episode records into one row.
   const [tv, film] = await Promise.all([
-    arr('sonarr', '/history?pageSize=30&sortKey=date&sortDirection=descending&eventType=3&includeEpisode=true&includeSeries=true', env, jwt),
-    arr('radarr', '/history?pageSize=30&sortKey=date&sortDirection=descending&eventType=3&includeMovie=true', env, jwt),
+    arr('sonarr', '/history?pageSize=100&sortKey=date&sortDirection=descending&eventType=3&includeEpisode=true&includeSeries=true', env, jwt),
+    arr('radarr', '/history?pageSize=40&sortKey=date&sortDirection=descending&eventType=3&includeMovie=true', env, jwt),
   ]);
   const pad = (n) => String(n ?? 0).padStart(2, '0');
   const gb = (n) => (Number(n || 0) / 2 ** 30).toFixed(2);
-  const items = [
-    ...(tv.records || []).map((r) => ({
-      via: 'TV', at: r.date,
-      title: r.series?.title || r.sourceTitle,
-      sub: r.episode ? `S${pad(r.episode.seasonNumber)}E${pad(r.episode.episodeNumber)}${r.episode.title ? ' · ' + r.episode.title : ''}` : '',
-      quality: r.quality?.quality?.name || '', gb: gb(r.data?.size),
+  const since = Date.now() - HISTORY_DAYS * 86400000;
+  const recent = (r) => Date.parse(r.date) >= since;
+
+  // One row per series and season, not per episode. Sonarr writes an import record for
+  // every file, so a season grab would otherwise be the only thing on the page.
+  const seasons = new Map();
+  for (const r of (tv.records || []).filter(recent)) {
+    const title = r.series?.title || r.sourceTitle || 'Unknown';
+    const season = r.episode?.seasonNumber;
+    const key = `${title}|${season ?? '?'}`;
+    const row = seasons.get(key) || {
+      at: r.date, title, season, count: 0, bytes: 0,
+      quality: r.quality?.quality?.name || '', first: '',
+    };
+    row.count += 1;
+    row.bytes += Number(r.data?.size || 0);
+    // Records arrive newest first, so the first one seen is both the latest and the one
+    // whose episode title is worth keeping if it turns out to be alone.
+    if (row.count === 1 && r.episode) {
+      row.first = `S${pad(season)}E${pad(r.episode.episodeNumber)}${r.episode.title ? ' · ' + r.episode.title : ''}`;
+    }
+    seasons.set(key, row);
+  }
+
+  const all = [
+    ...[...seasons.values()].map((s) => ({
+      via: 'TV', at: s.at, title: s.title, quality: s.quality, gb: gb(s.bytes),
+      sub: s.count === 1 ? s.first : `${seasonLabel(s.season)} · ${s.count} episodes`,
     })),
-    ...(film.records || []).map((r) => ({
+    ...(film.records || []).filter(recent).map((r) => ({
       via: 'Film', at: r.date,
       title: r.movie ? `${r.movie.title}${r.movie.year ? ` (${r.movie.year})` : ''}` : r.sourceTitle,
       sub: '', quality: r.quality?.quality?.name || '', gb: gb(r.data?.size),
     })),
-  ].sort((a, b) => String(b.at).localeCompare(String(a.at))).slice(0, 25);
-  return { items };
+  ].sort((a, b) => String(b.at).localeCompare(String(a.at)));
+
+  return {
+    items: all.slice(0, HISTORY_ROWS),
+    more: Math.max(0, all.length - HISTORY_ROWS),
+    days: HISTORY_DAYS,
+  };
 }
 
 // Same treatment as the queue: home being down is a normal state here, not an error.
@@ -669,6 +706,13 @@ const STYLES = `
   body { margin: 0; font: 15px/1.5 system-ui, -apple-system, sans-serif; background: var(--surface); color: var(--ink); -webkit-font-smoothing: antialiased; }
   .wrap { max-width: 860px; margin: 0 auto; padding: 40px 16px 96px; }
   h1 { font-size: 22px; font-weight: 650; letter-spacing: -0.01em; margin: 0 0 4px; }
+  /* The mark and the wordmark. Both pages share it, so /shows cannot drift. */
+  .brand { margin: 0 0 4px; }
+  .brand, .brand > a { display: flex; align-items: center; gap: 11px; color: inherit; text-decoration: none; }
+  .brand svg { flex: none; display: block; }
+  .brand .wm { font-size: 21px; font-weight: 800; letter-spacing: .14em; line-height: 1; }
+  .brand .sub { display: block; font-size: 9px; font-weight: 600; letter-spacing: .19em; color: var(--muted); margin-top: 5px; }
+  .brand > a:hover .wm { color: var(--accent); }
   .lede { color: var(--muted); margin: 0 0 24px; font-size: 14px; }
   form { display: flex; gap: 8px; }
   .mode { display: flex; gap: 14px; margin: 10px 4px 0; font-size: 13px; color: var(--muted); }
@@ -719,6 +763,9 @@ const STYLES = `
   @media (max-width: 600px) {
     .wrap { padding: max(16px, env(safe-area-inset-top)) 12px 72px; }
     h1 { font-size: 19px; }
+    .brand svg { width: 32px; height: 32px; }
+    .brand .wm { font-size: 18px; }
+    .brand { gap: 9px; }
     .lede { margin-bottom: 14px; }
     form { flex-direction: column; }
     input[type=search] { font-size: 16px; padding: 12px 14px; }
@@ -751,12 +798,14 @@ const PAGE = (email, autoAdd) => `<!doctype html>
 <meta name="apple-mobile-web-app-capable" content="yes">
 <meta name="apple-mobile-web-app-title" content="Download">
 <meta name="robots" content="noindex">
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='8.5' fill='%233538cd'/%3E%3Cg fill='none' stroke='%23fff' stroke-width='3.2' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='M16 7.5V18'/%3E%3Cpath d='M11.2 14 16 19 20.8 14'/%3E%3Cpath d='M9.5 24.5h13' opacity='.55'/%3E%3C/g%3E%3C/svg%3E">
+<link rel="apple-touch-icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='8.5' fill='%233538cd'/%3E%3Cg fill='none' stroke='%23fff' stroke-width='3.2' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='M16 7.5V18'/%3E%3Cpath d='M11.2 14 16 19 20.8 14'/%3E%3Cpath d='M9.5 24.5h13' opacity='.55'/%3E%3C/g%3E%3C/svg%3E">
 <title>download.ephix.net</title>
 ${STYLES}
 </head>
 <body>
 <div class="wrap">
-  <h1>download.ephix.net</h1>
+  <h1 class="brand"><svg width="38" height="38" viewBox="0 0 32 32" aria-hidden="true"><rect width="32" height="32" rx="8.5" fill="var(--accent)"/><g fill="none" stroke="var(--accent-ink)" stroke-width="3.2" stroke-linecap="round" stroke-linejoin="round"><path d="M16 7.5V18"/><path d="M11.2 14 16 19 20.8 14"/><path d="M9.5 24.5h13" opacity=".55"/></g></svg><span class="wm">EPHIX<span class="sub">DOWNLOAD</span></span></h1>
   <p class="lede">Type a show or a film. Add it, and it downloads at home.</p>
   <form id="f" autocomplete="off">
     <input id="q" type="search" placeholder="Slow Horses, Heat 1995, The Pitt…" autofocus>
@@ -782,7 +831,7 @@ const esc = (s) => String(s ?? '').replace(/[&<>"']/g, (c) => ({'&':'&amp;','<':
 
 const mode = () => document.querySelector('input[name=mode]:checked').value;
 document.querySelectorAll('input[name=mode]').forEach((r) => r.addEventListener('change', () => {
-  $('#q').placeholder = mode() === 'raw' ? 'anything — release names, sport, documentaries…' : 'Slow Horses, Heat 1995, The Pitt…';
+  $('#q').placeholder = mode() === 'raw' ? 'anything: release names, sport, documentaries…' : 'Slow Horses, Heat 1995, The Pitt…';
   if ($('#q').value.trim()) $('#f').requestSubmit();
 }));
 
@@ -930,11 +979,12 @@ async function loadHistory() {
     if (r.error) throw new Error(r.error);
     if (r.offline) { $('#history').className = 'msg'; $('#history').textContent = 'Home is offline, so there is no history to show.'; return; }
     $('#history').className = r.items.length ? '' : 'msg';
-    $('#history').innerHTML = r.items.length ? r.items.map((i) =>
+    if (!r.items.length) { $('#history').textContent = 'Nothing in the last ' + r.days + ' days.'; return; }
+    $('#history').innerHTML = r.items.map((i) =>
       '<div class="q"><div class="t"><span class="tag">' + esc(i.via) + '</span>' + esc(i.title)
       + ' <span class="m">' + esc(ago(i.at)) + (i.gb > 0 ? ' · ' + i.gb + ' GB' : '') + (i.quality ? ' · ' + esc(i.quality) : '') + '</span></div>'
       + (i.sub ? '<div class="m">' + esc(i.sub) + '</div>' : '') + '</div>').join('')
-      : 'Nothing downloaded yet.';
+      + (r.more ? '<div class="msg">and ' + r.more + ' more in the last ' + r.days + ' days.</div>' : '');
   } catch (err) { $('#history').innerHTML = '<span class="err">' + esc(err.message) + '</span>'; }
 }
 loadHistory(); setInterval(loadHistory, 60000);
@@ -967,6 +1017,8 @@ const SUBS_PAGE = (email) => `<!doctype html>
 <meta name="apple-mobile-web-app-capable" content="yes">
 <meta name="apple-mobile-web-app-title" content="Shows">
 <meta name="robots" content="noindex">
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='8.5' fill='%233538cd'/%3E%3Cg fill='none' stroke='%23fff' stroke-width='3.2' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='M16 7.5V18'/%3E%3Cpath d='M11.2 14 16 19 20.8 14'/%3E%3Cpath d='M9.5 24.5h13' opacity='.55'/%3E%3C/g%3E%3C/svg%3E">
+<link rel="apple-touch-icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='8.5' fill='%233538cd'/%3E%3Cg fill='none' stroke='%23fff' stroke-width='3.2' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='M16 7.5V18'/%3E%3Cpath d='M11.2 14 16 19 20.8 14'/%3E%3Cpath d='M9.5 24.5h13' opacity='.55'/%3E%3C/g%3E%3C/svg%3E">
 <title>Subscriptions</title>
 ${STYLES}
 <style>
@@ -979,7 +1031,7 @@ ${STYLES}
 </head>
 <body>
 <div class="wrap">
-  <h1>Subscriptions</h1>
+  <h1 class="brand"><a href="/" title="Add something"><svg width="38" height="38" viewBox="0 0 32 32" aria-hidden="true"><rect width="32" height="32" rx="8.5" fill="var(--accent)"/><g fill="none" stroke="var(--accent-ink)" stroke-width="3.2" stroke-linecap="round" stroke-linejoin="round"><path d="M16 7.5V18"/><path d="M11.2 14 16 19 20.8 14"/><path d="M9.5 24.5h13" opacity=".55"/></g></svg><span class="wm">EPHIX<span class="sub">SUBSCRIPTIONS</span></span></a></h1>
   <p class="lede">What the library is committed to. Pause stops new grabs, Remove makes Sonarr forget it. Neither touches a file you already have.</p>
   <div class="nav"><a href="/">&larr; Add something</a></div>
   <div id="msg" class="msg">Loading&hellip;</div>
