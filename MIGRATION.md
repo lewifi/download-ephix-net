@@ -20,14 +20,14 @@ Captured from the running system on 2026-09-23:
 | Plex | 1.43.4 | `%LOCALAPPDATA%\Plex Media Server` | library folders |
 | cloudflared | service | `C:\ProgramData\cloudflared\token` | none |
 
-Current paths, all becoming `D:\Media\...` on the Mini PC:
+Current paths, all becoming `M:\Media\...` on the Mini PC:
 
 ```
-Sonarr root       C:\Users\lewih\Downloads\Media\TV        -> D:\Media\TV
-Radarr root       C:\Users\lewih\Downloads\Media\Movies    -> D:\Media\Movies
-qBittorrent save  C:\Users\lewih\Downloads\Media\Incoming  -> D:\Media\Incoming
-raw grabs                          ...\Media\Other         -> D:\Media\Other
-scripts                            ...\Media\App           -> D:\Media\App
+Sonarr root       C:\Users\lewih\Downloads\Media\TV        -> M:\Media\TV
+Radarr root       C:\Users\lewih\Downloads\Media\Movies    -> M:\Media\Movies
+qBittorrent save  C:\Users\lewih\Downloads\Media\Incoming  -> M:\Media\Incoming
+raw grabs                          ...\Media\Other         -> M:\Media\Other
+scripts                            ...\Media\App           -> M:\Media\App
 ```
 
 ## Order matters
@@ -58,18 +58,28 @@ Worker's `SONARR_API_KEY`, `RADARR_API_KEY` and `PROWLARR_API_KEY` secrets stay 
 never need re-entering. Verify it after the restore rather than assuming.
 
 Finish the library copy, then run this to catch anything that changed while you were
-copying. It only moves what is new:
+copying. It only moves what is new.
+
+**`Incoming` is deliberately excluded.** Its files are hardlinks of the ones already in
+`TV`, so they cost nothing on the source drive, but robocopy does not preserve hardlinks
+and writes them as full second copies. That is where 30 GB of duplicate went on the first
+attempt, and qBittorrent recreates the folder on the new machine anyway:
 
 ```powershell
-robocopy "C:\Users\lewih\Downloads\Media" "D:\Media" /E /J /R:1 /W:2 /TEE /LOG:"D:\copy.log"
+robocopy "C:\Users\lewih\Downloads\Media" "M:\Media" /E /J /R:1 /W:2 /TEE /XD "C:\Users\lewih\Downloads\Media\Incoming" /LOG:"M:\copy.log"
 ```
 
 ### 2. Prepare the Mini PC
 
 Windows updates first, so it does not decide to reboot mid-migration.
 
-Plug the drive in and **make sure it gets `D:`**. Disk Management, right click the volume,
-Change Drive Letter. Every path below assumes `D:`.
+Plug the drive in and **make sure it gets `M:`**. Every path below assumes it. From an
+**elevated** PowerShell, checking the disk number first because it is not always 1:
+
+```powershell
+Get-Disk | Where-Object BusType -eq 'USB' | Select-Object Number, FriendlyName, @{n='SizeGB';e={[math]::Round($_.Size/1GB)}}
+Set-Partition -DiskNumber 1 -PartitionNumber 1 -NewDriveLetter M
+```
 
 Power settings, because the drive is USB and mostly idle:
 
@@ -106,11 +116,11 @@ In each UI: System, Backup, Restore Backup, pick the zip. It restarts itself.
 Then fix the paths, which the restore cannot know about:
 
 - **Sonarr**: Settings, Media Management, Root Folders. Remove the `C:\Users\...` entry,
-  add `D:\Media\TV`. Then Series, select all, Mass Editor, set root folder, so existing
+  add `M:\Media\TV`. Then Series, select all, Mass Editor, set root folder, so existing
   series point at the new path rather than showing as missing.
-- **Radarr**: the same with `D:\Media\Movies`.
+- **Radarr**: the same with `M:\Media\Movies`.
 - **Both**: Settings, Connect, the "English audio default" custom script. Change its path
-  to `D:\Media\App\Set-EnglishAudio.ps1`.
+  to `M:\Media\App\Set-EnglishAudio.ps1`.
 - **Both**: Settings, Download Clients, qBittorrent. Confirm host `localhost`, port 8080,
   and that **Remove Completed Downloads is on**.
 
@@ -128,7 +138,7 @@ as a service.
 ### 5. qBittorrent and the scripts
 
 Copy `qBittorrent.ini` into `%APPDATA%\qBittorrent` with qBittorrent closed, then start it
-and change the save path to `D:\Media\Incoming`. Categories `tv-sonarr`, `movies-radarr`
+and change the save path to `M:\Media\Incoming`. Categories `tv-sonarr`, `movies-radarr`
 and `other` should come across with the ini.
 
 Web UI, Options, Web UI: **server domains must be `localhost;qbit-api.ephix.net`**, with a
@@ -140,14 +150,14 @@ custom script will fail with "File does not exist" even though the file is plain
 Check and grant:
 
 ```powershell
-(Get-Acl 'D:\Media\App').Access | Where-Object { $_.IdentityReference -match 'LOCAL SERVICE' }
-icacls "D:\Media\App" /grant "NT AUTHORITY\LOCAL SERVICE:(OI)(CI)(RX)"
+(Get-Acl 'M:\Media\App').Access | Where-Object { $_.IdentityReference -match 'LOCAL SERVICE' }
+icacls "M:\Media\App" /grant "NT AUTHORITY\LOCAL SERVICE:(OI)(CI)(RX)"
 ```
 
 ### 6. cloudflared
 
 Install it on the Mini PC with the **same tunnel token**, which is on the drive at
-`D:\Media\App\cloudflare tunnel key.txt`. The tunnel then has two connectors and traffic
+`M:\Media\App\cloudflare tunnel key.txt`. The tunnel then has two connectors and traffic
 splits between them, which is fine and briefly useful for testing.
 
 Nothing in the Cloudflare dashboard changes. The ingress rules still say
@@ -163,9 +173,9 @@ Fresh install rather than a migration. The library database was 6 MB, so there i
 nothing to preserve. Add three libraries:
 
 ```
-Films         D:\Media\Movies
-TV Programmes D:\Media\TV
-Other videos  D:\Media\Other
+Films         M:\Media\Movies
+TV Programmes M:\Media\TV
+Other videos  M:\Media\Other
 ```
 
 Claim the server to your account when it asks. Afterwards remove the laptop's server under
