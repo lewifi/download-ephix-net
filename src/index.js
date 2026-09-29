@@ -568,7 +568,7 @@ async function queue(env, jwt) {
 async function qbit(path, env, jwt) {
   let r;
   try {
-    r = await fetch(`${env.QBIT_URL}/api/v2${path}`, { redirect: 'manual', headers: originHeaders(env, jwt, '', { Referer: `${env.QBIT_URL}/` }) });
+    r = await fetch(`${env.QBIT_URL}/api/v2${path}`, { redirect: 'manual', headers: originHeaders(env, jwt, '', { Referer: 'http://localhost/' }) });
   } catch (e) {
     throw new OfflineError(`qbittorrent unreachable: ${e.message || e}`);
   }
