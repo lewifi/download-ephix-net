@@ -1,7 +1,8 @@
 # Moving the stack to the Mini PC
 
 Moving Plex, Sonarr, Radarr, Prowlarr, qBittorrent and cloudflared from the laptop to a
-Dell OptiPlex 7070 Micro, with the library on a 4 TB USB drive.
+Dell OptiPlex 7070 Micro, with the library on a 4 TB USB drive (`M:`) and downloads on a
+separate 512 GB USB NVMe (`I:`).
 
 **The Worker does not change.** It talks to `*-api.ephix.net`, which resolves through the
 tunnel to whichever machine is running cloudflared. Nothing in Cloudflare needs touching:
@@ -20,15 +21,50 @@ Captured from the running system on 2026-09-23:
 | Plex | 1.43.4 | `%LOCALAPPDATA%\Plex Media Server` | library folders |
 | cloudflared | service | `C:\ProgramData\cloudflared\token` | none |
 
-Current paths, all becoming `M:\Media\...` on the Mini PC:
+Current paths. The **library** lives on `M:`; **downloads live on their own drive `I:`**
+(see "Why downloads are on their own drive" below):
 
 ```
 Sonarr root       C:\Users\lewih\Downloads\Media\TV        -> M:\Media\TV
 Radarr root       C:\Users\lewih\Downloads\Media\Movies    -> M:\Media\Movies
-qBittorrent save  C:\Users\lewih\Downloads\Media\Incoming  -> M:\Media\Incoming
+qBittorrent temp  (incomplete downloads)                   -> I:\Incomplete
+qBittorrent save  C:\Users\lewih\Downloads\Media\Incoming  -> I:\Incoming
+  categories tv-sonarr / movies-radarr / other            -> I:\Incoming\{tv,movies,other}
 raw grabs                          ...\Media\Other         -> M:\Media\Other
 scripts                            ...\Media\App           -> M:\Media\App
 ```
+
+## Why downloads are on their own drive
+
+Downloads go to a dedicated 512 GB USB NVMe (`I:`), not the library drive and not `C:`.
+Two reasons, both learned the hard way:
+
+- **The 4 TB library drive is a USB HDD.** Torrents write scattered random pieces, which
+  thrash a spinning USB disk down to 25–50 KB/s. The NVMe absorbs those random writes at
+  full speed; completed files are then copied to `M:` as one sequential write, which the
+  HDD handles fine.
+- **`C:` is only 256 GB.** A single UHD remux is 55–85 GB, so a couple of concurrent grabs
+  fill the system drive and every download errors out. The 512 GB NVMe holds three at once.
+
+qBittorrent layout on `I:`:
+
+```
+Incomplete (temp)    I:\Incomplete
+Completed            I:\Incoming\{tv,movies,other}   (per category)
+Max active downloads 3
+Share ratio limit    0, action = pause   (Sonarr/Radarr delete the original after import)
+```
+
+Because downloads (`I:`) and the library (`M:`) are different volumes, import is a copy,
+not a hardlink. That is fine here: the sequential copy is fast, and the ratio-0 limit means
+qBittorrent stops seeding the instant a torrent completes, so Sonarr/Radarr remove the `I:`
+copy right after importing and nothing lingers on the download drive.
+
+**Do not move in-progress torrents between drives** with qBittorrent's "Set location". On
+this USB NTFS it de-sparsifies the file (writes the full size as zeros), bloating the
+destination. If a download is on the wrong drive, scrap it and re-grab — it costs only the
+few percent already downloaded. Note too that qBittorrent tracks the *incomplete* path
+separately from the save path; changing one does not move the other.
 
 ## Order matters
 
@@ -119,6 +155,11 @@ Then fix the paths, which the restore cannot know about:
   add `M:\Media\TV`. Then Series, select all, Mass Editor, set root folder, so existing
   series point at the new path rather than showing as missing.
 - **Radarr**: the same with `M:\Media\Movies`.
+- **Both, important**: the *only* root folder should be the library path (`M:\Media\TV` /
+  `M:\Media\Movies`). Never add the download folder (`I:\Incoming\...`) as a root folder —
+  it makes the app "import" in place on the download drive instead of moving to the library,
+  and triggers a "downloads in a root folder" health warning. Also clear any **Remote Path
+  Mappings** (Settings, Download Clients); an all-local setup needs none.
 - **Both**: Settings, Connect, the "English audio default" custom script. Change its path
   to `M:\Media\App\Set-EnglishAudio.ps1`.
 - **Both**: Settings, Download Clients, qBittorrent. Confirm host `localhost`, port 8080,
@@ -138,8 +179,12 @@ as a service.
 ### 5. qBittorrent and the scripts
 
 Copy `qBittorrent.ini` into `%APPDATA%\qBittorrent` with qBittorrent closed, then start it
-and change the save path to `M:\Media\Incoming`. Categories `tv-sonarr`, `movies-radarr`
-and `other` should come across with the ini.
+and set the **temp (incomplete) path to `I:\Incomplete`** and the **default save path to
+`I:\Incoming`**. Categories `tv-sonarr`, `movies-radarr` and `other` should come across with
+the ini; confirm their save paths are `I:\Incoming\tv`, `I:\Incoming\movies` and
+`I:\Incoming\other`. Set **max active downloads to 3** and the **global share-ratio limit to
+0 with action = pause** (Options, BitTorrent), so completed torrents stop immediately and
+the arr apps delete the original after importing.
 
 Web UI, Options, Web UI: **server domains must be `localhost;qbit-api.ephix.net`**, with a
 **semicolon**. A comma creates one bogus domain and locks out everything including Sonarr
