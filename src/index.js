@@ -9,9 +9,9 @@
 // front), and forwards that JWT to the origin hostnames so the tunnel side is gated
 // by the same login. Sonarr/Radarr API keys live in Worker secrets.
 
-const ROOT_TV = 'C:\\Users\\lewih\\Downloads\\Media\\TV';
-const ROOT_MOVIES = 'C:\\Users\\lewih\\Downloads\\Media\\Movies';
-const QUALITY = 'HD-1080p';
+const ROOT_TV = 'M:\\Media\\TV';
+const ROOT_MOVIES = 'M:\\Media\\Movies';
+const QUALITY = 'Ultra-HD';
 
 // Sites allowed to call the API from the browser (the ⬇ icons on Ephix Pulse cards).
 // Same registrable domain as download.ephix.net, so the Access cookie travels with the
@@ -107,14 +107,30 @@ async function drainPending(env) {
     const v = await env.QUEUE.get(k.name, 'json');
     if (!v) continue;
     try {
-      await add(v, env, v.jwt);
+      const res = await add(v, env, v.jwt);
       await env.QUEUE.delete(k.name);
+      // Raw grabs already notify from grab(); announce queued movie/show adds here.
+      if (v.type !== 'raw') await notify(env, { title: 'Back online, queued add sent', message: `${v.title || res.title || 'Your item'} has been sent to the library`, tags: 'inbox_tray' });
     } catch (e) {
       v.tries = (v.tries || 0) + 1;
       v.lastError = String(e.message || e).slice(0, 200);
       await env.QUEUE.put(k.name, JSON.stringify(v), { expirationTtl: 7 * 86400 });
     }
   }
+}
+
+// Best-effort phone push via ntfy (https://ntfy.sh/<topic>, or a self-hosted NTFY_URL).
+// Never throws: a failed or unconfigured notification must not break the add it reports.
+// Unset NTFY_TOPIC = silent, so the Worker runs fine before the secret is added.
+async function notify(env, { title, message, tags, priority } = {}) {
+  if (!env.NTFY_TOPIC) return;
+  const base = (env.NTFY_URL || 'https://ntfy.sh').replace(/\/+$/, '');
+  const headers = { Title: title || 'ephix' };
+  if (tags) headers.Tags = tags;
+  if (priority) headers.Priority = String(priority);
+  try {
+    await fetch(`${base}/${env.NTFY_TOPIC}`, { method: 'POST', headers, body: message || '' });
+  } catch { /* best-effort: a dropped notification is never worth failing the add */ }
 }
 
 // A health check the cron can run on its own. Every other path needs a visitor to be
@@ -217,8 +233,8 @@ class OfflineError extends Error { constructor(m) { super(m); this.offline = tru
 const isOffline = (e) => !!e?.offline;
 
 const APPS = {
-  sonarr:   { url: 'SONARR_URL',   key: 'SONARR_API_KEY',   api: '/api/v3' },
-  radarr:   { url: 'RADARR_URL',   key: 'RADARR_API_KEY',   api: '/api/v3' },
+  sonarr: { url: 'SONARR_URL', key: 'SONARR_API_KEY', api: '/api/v3' },
+  radarr: { url: 'RADARR_URL', key: 'RADARR_API_KEY', api: '/api/v3' },
   prowlarr: { url: 'PROWLARR_URL', key: 'PROWLARR_API_KEY', api: '/api/v1' },
 };
 
@@ -344,8 +360,9 @@ async function search(q, env, jwt) {
 }
 
 async function profileId(app, env, jwt) {
+  const want = env.QUALITY || QUALITY;
   const profiles = await arr(app, '/qualityprofile', env, jwt);
-  return (profiles.find((p) => p.name === QUALITY) || profiles[0]).id;
+  return (profiles.find((p) => p.name === want || String(p.id) === String(want)) || profiles.find((p) => p.id === 5) || profiles[0]).id;
 }
 
 // Windows device names are legal in a title but not usable as a folder.
@@ -436,11 +453,12 @@ async function add({ type, id, mode, tmdbId, seasons: picked, guid, indexerId, t
       monitor = 'skip'; // keep the per-season flags below exactly as sent
       seasonList = (s.seasons || []).map((x) => ({ ...x, monitored: want.has(x.seasonNumber) }));
     }
+    const tvRoot = env.ROOT_TV || ROOT_TV;
     const r = await arr('sonarr', '/series', env, jwt, {
       method: 'POST',
       body: JSON.stringify({
         tvdbId: s.tvdbId, title: s.title, titleSlug: s.titleSlug, images: s.images, seasons: seasonList,
-        path: `${ROOT_TV}\\${folder}`, rootFolderPath: ROOT_TV,
+        path: `${tvRoot}\\${folder}`, rootFolderPath: tvRoot,
         qualityProfileId: await profileId('sonarr', env, jwt),
         seasonFolder: true, monitored: true, seriesType: 'standard', monitorNewItems: 'all',
         addOptions: { monitor, searchForMissingEpisodes: true, searchForCutoffUnmetEpisodes: false },
@@ -452,15 +470,23 @@ async function add({ type, id, mode, tmdbId, seasons: picked, guid, indexerId, t
     const [m] = await arr('radarr', `/movie/lookup?term=tmdb:${tmdbId || id}`, env, jwt);
     if (!m) throw new Error('Not found on TMDB');
     if (m.id) {
+      // Don't start a second release when one is already downloading for this film — that is
+      // how the same movie ends up in qBittorrent twice. Skipping the search is a surer guard
+      // than trusting Radarr's own queue check, and avoids the pointless work besides.
+      const rq = await arr('radarr', '/queue?pageSize=200', env, jwt).catch(() => ({ records: [] }));
+      if ((rq.records || []).some((r) => r.movieId === m.id)) {
+        return { ok: true, already: true, downloading: true, title: m.title };
+      }
       await arr('radarr', '/command', env, jwt, { method: 'POST', body: JSON.stringify({ name: 'MoviesSearch', movieIds: [m.id] }) });
       return { ok: true, already: true, searched: 'the film', title: m.title };
     }
+    const movieRoot = env.ROOT_MOVIES || ROOT_MOVIES;
     const folder = safeFolder(`${m.title} (${m.year})`, `Movie ${m.tmdbId}`);
     const r = await arr('radarr', '/movie', env, jwt, {
       method: 'POST',
       body: JSON.stringify({
         tmdbId: m.tmdbId, title: m.title, year: m.year, titleSlug: m.titleSlug, images: m.images,
-        path: `${ROOT_MOVIES}\\${folder}`, rootFolderPath: ROOT_MOVIES,
+        path: `${movieRoot}\\${folder}`, rootFolderPath: movieRoot,
         qualityProfileId: await profileId('radarr', env, jwt),
         monitored: true, minimumAvailability: 'released',
         addOptions: { searchForMovie: true, monitor: 'movieOnly' },
@@ -522,6 +548,7 @@ async function grab({ guid, indexerId, q, title }, env, jwt) {
   if (!match) throw new Error('That result has dropped out of the search. Search again and re-grab.');
   if (!grabbable(match)) throw new Error(`Refused "${match.title}": executable-style name, or under ${MIN_BYTES / 2 ** 20} MB.`);
   await arr('prowlarr', '/search', env, jwt, { method: 'POST', body: JSON.stringify({ guid, indexerId: Number(indexerId) }) });
+  await notify(env, { title: 'Grabbed to qBittorrent', message: match.title, tags: 'inbox_tray' });
   return { ok: true, title: match.title, raw: true };
 }
 
@@ -968,6 +995,7 @@ async function add(btn, type, id, mode, seasons, tmdbId) {
     const what = mode === 'seasons' ? ' (S' + seasons.join(', S') + ' + new)' : mode === 'future' ? ' (new episodes only)' : mode === 'all' ? ' (all seasons)' : '';
     box.className = 'act';
     const msg = r.queued ? 'Queued. Home is offline, it will add automatically'
+      : r.downloading ? 'A copy is already downloading, not grabbing another'
       : r.already ? 'Already in the library. Searching ' + esc(r.searched || 'for what is missing')
       : 'Added, searching' + what;
     box.innerHTML = '<span class="ok">' + msg + '</span>';
@@ -1037,7 +1065,7 @@ if (/^(tv|movie):\\d+$/.test(autoAdd)) {
   fetch('/api/add', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ type, tmdbId: Number(tmdbId), mode: type === 'tv' ? 'latest' : 'all' }) })
     .then((r) => r.json())
     .then((r) => { if (r.error) throw new Error(r.error);
-      $('#msg').innerHTML = '<span class="ok">' + esc(r.title || '') + ': ' + (r.queued ? 'queued, home is offline, will add automatically' : r.already ? 'already in the library' : 'added, searching now') + '</span>';
+      $('#msg').innerHTML = '<span class="ok">' + esc(r.title || '') + ': ' + (r.queued ? 'queued, home is offline, will add automatically' : r.downloading ? 'a copy is already downloading' : r.already ? 'already in the library' : 'added, searching now') + '</span>';
       setTimeout(loadQueue, 4000); setTimeout(loadQueue, 15000); })
     .catch((err) => { $('#msg').innerHTML = '<span class="err">' + esc(err.message) + '</span>'; });
   history.replaceState(null, '', '/');

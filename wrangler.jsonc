@@ -41,6 +41,11 @@
 	// authenticate the Worker on the visitor's forwarded JWT, only on a service token,
 	// so without these every origin call is 302'd to the login page and the site reports
 	// "home is offline" while home is fine. See README step 4.
+	// Optional: NTFY_TOPIC turns on phone pushes from the Worker itself — a raw "Grab →
+	// Other" reaching qBittorrent, and a queued offline add once it finally goes through
+	// (Sonarr/Radarr already push their own grab/import notifications). Set it as a secret
+	// so the topic stays out of the repo:  wrangler secret put NTFY_TOPIC
+	// A self-hosted ntfy server can be targeted with an NTFY_URL var (defaults to ntfy.sh).
 	"observability": {
 		"enabled": true
 	}
