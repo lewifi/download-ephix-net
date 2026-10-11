@@ -560,7 +560,7 @@ async function queue(env, jwt) {
   const [sq, rq, qb] = await Promise.all([
     arr('sonarr', '/queue?pageSize=50&includeEpisode=true&includeSeries=true', env, jwt).catch(() => ({ records: [] })),
     arr('radarr', '/queue?pageSize=50&includeMovie=true', env, jwt).catch(() => ({ records: [] })),
-    env.QBIT_URL ? qbit('/torrents/info?filter=active', env, jwt).catch(() => null) : null,
+    env.QBIT_URL ? qbit('/torrents/info', env, jwt).catch(() => null) : null,
   ]);
   const pct = (r) => (r.size ? Math.round(((r.size - r.sizeleft) / r.size) * 100) : 0);
   const named = new Map(); // downloadId (torrent hash, upper) -> friendly title
@@ -1018,10 +1018,14 @@ async function loadQueue() {
       $('#queue').textContent = 'Home is offline: the laptop or its internet is down. Requests are queued and retried every 5 minutes.';
       return;
     }
+    const qrender = (i) =>
+      '<div class="q"' + (i.status === 'queued' ? ' style="opacity:.65"' : '') + '><div class="t">' + (i.via ? '<span class="tag">' + esc(i.via) + '</span>' : '') + esc(i.title) + ' <span class="m">' + i.pct + '% · ' + i.gb + ' GB' + (i.speed ? ' · ' + esc(i.speed) : '') + (i.eta ? ' · ' + esc(i.eta) + ' left' : '') + ' · ' + esc(i.status) + '</span></div>'
+      + '<div class="m">' + esc(i.release) + '</div><div class="bar"><i style="width:' + i.pct + '%"></i></div></div>';
+    const qActive = r.items.filter((i) => i.status !== 'queued');
+    const qWaiting = r.items.filter((i) => i.status === 'queued');
     $('#queue').className = r.items.length ? '' : 'msg';
-    $('#queue').innerHTML = r.items.length ? r.items.map((i) =>
-      '<div class="q"><div class="t">' + (i.via ? '<span class="tag">' + esc(i.via) + '</span>' : '') + esc(i.title) + ' <span class="m">' + i.pct + '% · ' + i.gb + ' GB' + (i.speed ? ' · ' + esc(i.speed) : '') + (i.eta ? ' · ' + esc(i.eta) + ' left' : '') + ' · ' + esc(i.status) + '</span></div>'
-      + '<div class="m">' + esc(i.release) + '</div><div class="bar"><i style="width:' + i.pct + '%"></i></div></div>').join('')
+    $('#queue').innerHTML = r.items.length
+      ? qActive.map(qrender).join('') + (qWaiting.length ? '<div class="m" style="margin:12px 0 4px;font-weight:600;opacity:.8">Queued · ' + qWaiting.length + ' waiting to start</div>' + qWaiting.map(qrender).join('') : '')
       : 'Nothing in the queue.';
   } catch (err) { $('#queue').innerHTML = '<span class="err">' + esc(err.message) + '</span>'; }
 }
